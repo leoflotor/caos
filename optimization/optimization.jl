@@ -1,6 +1,19 @@
+# Author: lft
+# NOTE: Currently this deals with bigfloats due to the factorials. When the
+#       data is save it is done so as bigfloats but when read it is read as 
+#       float64.
+
+# ----------------------------------------------------------------------------
+# General Imports
+
 import LinearAlgebra
 import SparseArrays
-# import Plots
+import DelimitedFiles
+import Plots
+
+
+# ----------------------------------------------------------------------------
+# Constants
 
 const ω     = ω0 = 1
 const γc    = 1/2 # sqrt(w * w0) / 2
@@ -22,6 +35,7 @@ cMinus(j::Int, m::Real) = j >= abs(m) ?
 cPlus(j::Int, m::Real) = j >= abs(m) ? 
     sqrt(j * (j + 1) - m * (m + 1)) :
     throw(ErrorException("The absolute value of m cannot bet greater than j."))
+
 
 # Function to compute the overlap in the BCE base.
 function overlap(
@@ -50,6 +64,7 @@ function overlap(
         return term1 * sum(term2)
     end
 end
+
 
 """
 Generates a matrix to contain all the overlaps for the intervals between 
@@ -84,6 +99,7 @@ function overlapCollection(n_max::Int, j::Int)
     temp
 end
 
+
 """
 Matrix representation of the Hamiltonian for the specified `n_max` and `j`.
 """
@@ -116,6 +132,7 @@ function hamiltonian(n_max::Int, j::Int)
     end
     temp
 end
+
 
 """
 When a matrix containing the overlaps is provided they wont be computed,
@@ -152,6 +169,14 @@ function hamiltonian(n_max::Int, j::Int, overlaps::AbstractArray)
     matrix
 end
 
+
+# Find the solution of the matrix representation of the hamiltonian
+function hamiltonianSolution(matrix::AbstractArray)
+    eigen_data = LinearAlgebra.eigen(matrix)
+    (values = eigen_data.values, vectors = eigen_data.vectors)
+end
+
+
 # To find converged states and their kappas
 function convergenceCriterion(
     j::Int, 
@@ -174,11 +199,30 @@ function convergenceCriterion(
   end
 end
 
+
+function convergenceCriterion(
+    j::Int, 
+    eigendata::NamedTuple{(:values, :vectors), Tuple{Array{T,1}, Array{T,2}}}, 
+    epsilon::T
+    ) where {T <: Float64}
+    # Coefficients that correspond to the last n in every eigen vector
+    index_of_first_nth_coeff = size(eigendata.values)[1] - 2*j
+    kappas = vec(sum(eigendata.vectors[index_of_first_nth_coeff:end,:].^2, dims=1))
+    for (index, kappa) in enumerate(kappas)
+        if kappa > epsilon
+            return (values = eigendata.values[1:index], 
+                    vectors = eigendata.vectors[:,1:index])
+                    # kappas[1:index]
+    end
+  end
+end
+
+
 function selectionCriterion(
     j::Int, 
-    matrix::AbstractArray, 
-    epsilon::Float64
-    )
+    matrix::Array{T,2},
+    epsilon::T
+    ) where {T <: Float64}
     m_range = -j:j
     tmp = Array{NTuple{2, Int}}(undef, length(m_range)*size(matrix)[2])
     for (i, col) in enumerate(eachcol(matrix)), (index, m) in enumerate(m_range)
@@ -202,9 +246,98 @@ function selectionCriterion(
         ms = map(x -> x[2], tmp_filter))
 end
 
-###################
+
+# ----------------------------------------------------------------------------
+# Save data
+
+padding(var) = lpad(var, 3, "0")
+
+file_name(file, n_max, j) = "data/$(file)_$(n_max |> padding)_$(j |> padding).csv"
+
+
+function write_hamiltonian(n_max::Int, j::Int)
+    # Check the existence of the file
+    which_hamiltonian = file_name("hamiltonian", n_max, j)
+    file_exists = isfile(which_hamiltonian)
+    !file_exists ? touch(which_hamiltonian) : println("Hamiltonian representation was already computed!")
+    
+    # Compute the hamiltonian representation and save it
+    data = hamiltonian(n_max, j)
+    open(which_hamiltonian, "w") do io
+        DelimitedFiles.writedlm(io, data, ',')
+    end
+end
+
+
+function write_eig_data(n_max, j)
+    # Assuming that (*) files already exist!
+    which_hamiltonian = file_name("hamiltonian", n_max, j)      # *
+    which_eig_vals = file_name("eigvals", n_max, j)
+    which_eig_vects = file_name("eigvects", n_max, j)
+
+    files = [which_eig_vals, which_eig_vects]
+    files_existence = isfile.(files)
+    !all(files_existence) ? touch.(files) : println("Eigendata was already computed!")
+
+    hamiltonian = DelimitedFiles.readdlm(which_hamiltonian, ',', Float64)
+    data = hamiltonianSolution(hamiltonian)
+
+    open(which_eig_vals, "w") do io
+        DelimitedFiles.writedlm(io, data.values, ',')
+    end
+    open(which_eig_vects, "w") do io
+        DelimitedFiles.writedlm(io, data.vectors, ',')
+    end
+end
+
+
+function write_cvg_data(n_max, j, epsilon)
+    # Assuming that (*) files already exist!
+    which_hamiltonian   = file_name("hamiltonian", n_max, j)    # *
+    which_eig_vals      = file_name("eigvals", n_max, j)        # *
+    which_eig_vects     = file_name("eigvects", n_max, j)       # *
+    which_cvg_vals      = file_name("cvgvals", n_max, j)
+    which_cvg_vects     = file_name("cvgvects", n_max, j)
+
+    files = [which_cvg_vals, which_cvg_vects]
+    files_existence = isfile.(files)
+    !all(files_existence) ? touch.(files) : println("Converged data was already computed!")
+
+    eig_vals = DelimitedFiles.readdlm(which_eig_vals, ',', Float64) |> vec
+    eig_vects = DelimitedFiles.readdlm(which_eig_vects, ',', Float64)
+    eigendata = (values = eig_vals, vectors = eig_vects)
+    data = convergenceCriterion(j, eigendata, epsilon)
+
+    open(which_cvg_vals, "w") do io
+        DelimitedFiles.writedlm(io, data.values, ',')
+    end
+    open(which_cvg_vects, "w") do io
+        DelimitedFiles.writedlm(io, data.vectors, ',')
+    end
+end
+
+
+function write_sel_data(n_max, j, epsilon)
+    # Assuming that (*) files already exist!
+    which_hamiltonian   = file_name("hamiltonian", n_max, j)    # *
+    which_cvg_vects     = file_name("cvgvects", n_max, j)       # *
+    which_sel_data      = file_name("seldata", n_max, j)
+
+    file_exist = isfile(which_sel_data)
+    !file_exist ? touch(which_sel_data) : println("Selected data was already computed!")
+
+    cvg_vects = DelimitedFiles.readdlm(which_cvg_vects, ',', Float64)
+
+    data = selectionCriterion(j, cvg_vects, epsilon)
+    open(which_sel_data, "w") do io
+        DelimitedFiles.writedlm(io, [data.ms data.ns],  ',')
+    end
+end
+
+
+# ----------------------------------------------------------------------------
 # Tips
-###################
+
 
 # julia> logs = log10.(tmp_vects[1:11:end,:].^2)
 
@@ -221,9 +354,10 @@ end
 #    end
 # end
 
-###################
+
+# ----------------------------------------------------------------------------
 # Unused
-###################
+
 
 function hamiltonianTuples(n_max::Int, j::Int)
   n_range = 0:n_max
@@ -279,8 +413,4 @@ function hamiltonianSparse(n_max::Int, j::Int)
     col += 1
   end
   return SparseArrays.sparse(row_loc, col_loc, elements) |> SparseArrays.dropzeros
-end
-
-function state(n_bra, m_bra, n_ket, m_ket, j)
-    (n_bra, m_bra, n_ket, m_ket, overlap(n_bra, m_bra, n_ket, m_ket, j))
 end
