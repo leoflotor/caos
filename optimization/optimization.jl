@@ -19,14 +19,20 @@ const ω     = ω0 = 1
 const γc    = 1/2 # sqrt(w * w0) / 2
 const γ     = 2*γc
 
-# G functions that means what?
-G(j) = (2 * γ) / (ω * sqrt(2*j))
+
+# ----------------------------------------------------------------------------
+# Generic functions
+
+G(j) = (2 * γ) / (ω * sqrt(2 * j)) # what was the meaning of G?
 
 # To compare sizes of matrices
 readableSize(x) = (Base.format_bytes ∘ Base.summarysize)(x)
 
 # Factorial function for large resulting values with arbitrary precision.
 bigFactorial(n) = (factorial ∘ big)(n)
+newFactorial(n) = n != 0 ? 
+                    mapreduce(log, +, 1:n) |> exp :
+                    1 # exp(sum(log(i) for i in 1:n))
 
 cMinus(j::Int, m::Real) = j >= abs(m) ?
     sqrt(j * (j + 1) - m * (m - 1)) :
@@ -37,32 +43,74 @@ cPlus(j::Int, m::Real) = j >= abs(m) ?
     throw(ErrorException("The absolute value of m cannot bet greater than j."))
 
 
-# Function to compute the overlap in the BCE base.
+# ----------------------------------------------------------------------------
+# Overlaps in the ECB
+
+function overlapNaive(
+    n_bra::Int,
+    m_bra::Real,
+    n_ket::Int,
+    m_ket::Real,
+    j::Int
+)
+    # This will deal with the special case first!
+    if m_bra == m_ket && n_bra != n_ket
+        return 0
+    end
+
+    newG = G(j) * (m_bra - m_ket)
+
+    sum_num(k) = (-1)^(n_ket - k) * 
+        sqrt(bigFactorial(n_bra) * bigFactorial(n_ket)) * 
+        newG^(n_bra + n_ket - 2*k)
+    sum_den(k) = bigFactorial(k) * 
+        bigFactorial(n_bra - k) * 
+        bigFactorial(n_ket - k)
+    summation(k) = sum_num(k) / sum_den(k)
+
+    term1 = exp(- newG^2 / 2)
+    # term2 = sum(sum_num(k) / sum_den(k) for k=0:min(n_bra, n_ket))
+    term2 = mapreduce(summation, +, 0:min(n_bra, n_ket))
+    return term1 * term2
+end
+
+
 function overlap(
     n_bra::Int,
     m_bra::Real,
     n_ket::Int,
     m_ket::Real,
     j::Int
-    )
-    newG(m_bra, m_ket) = G(j) * (m_bra - m_ket)
-    sum_num(n_bra, n_ket, k) = (-1)^(n_ket - k) * 
-        sqrt(bigFactorial(n_bra) * bigFactorial(n_ket)) * 
-        newG(m_bra, m_ket)^(n_bra + n_ket -2*k)
-    sum_den(n_bra, n_ket, k) = bigFactorial(k) * 
-        bigFactorial(n_bra - k) * 
-        bigFactorial(n_ket - k)
+)
+    # Dealing with the special cases first!
+    # 1st special case N' = N, m' != m.
     if m_bra == m_ket && n_bra != n_ket
         return 0
-    else
-        term1 = exp(- newG(m_bra, m_ket)^2 / 2)
-        # term2 = [sum_num(n_bra, n_ket, k) / sum_den(n_bra, n_ket, k) 
-        #   for k=0:min(n_bra, n_ket)]
-        term2 = sum(sum_num(n_bra, n_ket, k) / 
-            sum_den(n_bra, n_ket, k) 
-            for k=0:min(n_bra, n_ket))
-        return term1 * sum(term2)
     end
+    # 2nd special case N' = N, m' = m.
+    if m_bra == m_ket && n_bra == n_ket
+        return 1
+    end
+
+    newG = G(j) * (m_bra - m_ket)
+    i0 =  (-1)^(n_ket) * newG^(n_bra + n_ket) / 
+            sqrt(newFactorial(n_bra) * newFactorial(n_ket))
+    
+    coeff(k) = (-1) * newG^(-2) * (n_bra - k) * (n_ket - k) / (k + 1)
+
+    # ---------------------------------- *works*
+    a = coeff(0)
+    summation = a
+    for k in 1:min(n_bra, n_ket)-1
+        a = a * coeff(k)
+        summation += a
+    end
+    
+    return exp(- newG^2 / 2) * i0 * (1 + summation)
+
+    # ---------------------------------- *works but is slower*
+    # summation = i0 * (1 + sum(prod(coeff(i) for i in 0:k) for k in 0:min(n_bra, n_ket)-1))
+    # return exp(- newG^2 / 2) * summation
 end
 
 
@@ -259,7 +307,7 @@ function write_hamiltonian(n_max::Int, j::Int)
     # Check the existence of the file
     which_hamiltonian = file_name("hamiltonian", n_max, j)
     file_exists = isfile(which_hamiltonian)
-    !file_exists ? touch(which_hamiltonian) : println("Hamiltonian representation was already computed!")
+    !file_exists ? touch(which_hamiltonian) : return "Hamiltonian representation was already computed!"
     
     # Compute the hamiltonian representation and save it
     data = hamiltonian(n_max, j)
@@ -277,7 +325,7 @@ function write_eig_data(n_max, j)
 
     files = [which_eig_vals, which_eig_vects]
     files_existence = isfile.(files)
-    !all(files_existence) ? touch.(files) : println("Eigendata was already computed!")
+    !all(files_existence) ? touch.(files) : return "Eigendata was already computed!"
 
     hamiltonian = DelimitedFiles.readdlm(which_hamiltonian, ',', Float64)
     data = hamiltonianSolution(hamiltonian)
@@ -293,7 +341,6 @@ end
 
 function write_cvg_data(n_max, j, epsilon)
     # Assuming that (*) files already exist!
-    which_hamiltonian   = file_name("hamiltonian", n_max, j)    # *
     which_eig_vals      = file_name("eigvals", n_max, j)        # *
     which_eig_vects     = file_name("eigvects", n_max, j)       # *
     which_cvg_vals      = file_name("cvgvals", n_max, j)
@@ -301,7 +348,7 @@ function write_cvg_data(n_max, j, epsilon)
 
     files = [which_cvg_vals, which_cvg_vects]
     files_existence = isfile.(files)
-    !all(files_existence) ? touch.(files) : println("Converged data was already computed!")
+    !all(files_existence) ? touch.(files) : return "Converged data was already computed!"
 
     eig_vals = DelimitedFiles.readdlm(which_eig_vals, ',', Float64) |> vec
     eig_vects = DelimitedFiles.readdlm(which_eig_vects, ',', Float64)
@@ -324,7 +371,7 @@ function write_sel_data(n_max, j, epsilon)
     which_sel_data      = file_name("seldata", n_max, j)
 
     file_exist = isfile(which_sel_data)
-    !file_exist ? touch(which_sel_data) : println("Selected data was already computed!")
+    !file_exist ? touch(which_sel_data) : return "Selected data was already computed!"
 
     cvg_vects = DelimitedFiles.readdlm(which_cvg_vects, ',', Float64)
 
