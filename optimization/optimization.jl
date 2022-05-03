@@ -9,7 +9,6 @@
 import LinearAlgebra
 import SparseArrays
 import DelimitedFiles
-import Plots
 
 
 # ----------------------------------------------------------------------------
@@ -30,15 +29,20 @@ readableSize(x) = (Base.format_bytes ∘ Base.summarysize)(x)
 
 # Factorial function for large resulting values with arbitrary precision.
 bigFactorial(n) = (factorial ∘ big)(n)
-newFactorial(n) = n != 0 ? 
-                    mapreduce(log, +, 1:n) |> exp :
-                    1 # exp(sum(log(i) for i in 1:n))
 
-cMinus(j::Int, m::Real) = j >= abs(m) ?
+newFactorial(n) = n != 0 ? 
+                    mapreduce(log, +, 1:n) |> exp : # exp(sum(log(i) for i in 1:n))
+                    1
+
+logFactorial(n) = n != 0 ?
+                    sum(log(i) for i in 1:n) :
+                    1
+
+cMinus(j::Int, m::Int) = j >= abs(m) ?
     sqrt(j * (j + 1) - m * (m - 1)) :
     throw(ErrorException("The absolute value of m cannot bet greater than j."))
 
-cPlus(j::Int, m::Real) = j >= abs(m) ? 
+cPlus(j::Int, m::Int) = j >= abs(m) ? 
     sqrt(j * (j + 1) - m * (m + 1)) :
     throw(ErrorException("The absolute value of m cannot bet greater than j."))
 
@@ -46,13 +50,57 @@ cPlus(j::Int, m::Real) = j >= abs(m) ?
 # ----------------------------------------------------------------------------
 # Overlaps in the ECB
 
+function overlap(
+    n_bra::T,
+    m_bra::T,
+    n_ket::T,
+    m_ket::T,
+    j::T
+)::Float64 where T <: Int
+    # Dealing with the special cases first!
+    # 1st special case N' = N, m' != m.
+    if m_bra == m_ket && n_bra != n_ket
+        return 0
+    end
+    # 2nd special case N' = N, m' = m.
+    if m_bra == m_ket && n_bra == n_ket
+        return 1
+    end
+
+    newG = G(j) * (m_bra - m_ket)
+
+    # ---------------------------------- *Methods*
+    # i0 = (-1)^(n_ket) * newG^(n_bra + n_ket) * 
+    #         exp(-(logFactorial(n_bra) + logFactorial(n_ket)) / 2)
+    # i0 = (-1)^(n_ket) * newG^(n_bra + n_ket) / 
+    #         sqrt(exp(logFactorial(n_bra) * logFactorial(n_ket)))
+    # i0 = (-1)^(n_ket) * newG^(n_bra + n_ket) / 
+    #         sqrt(newFactorial(n_bra) * newFactorial(n_ket))
+    i0 = (-1)^(n_ket) * newG^(n_bra + n_ket) / 
+            sqrt(bigFactorial(n_bra) * bigFactorial(n_ket))
+    
+    coeff(k) = (-1) * newG^(-2) * (n_bra - k) * (n_ket - k) / (k + 1)
+
+    # ---------------------------------- *works*
+    # (*) Helps reduce underflow... I think.
+    a = i0 * coeff(0) # (*)
+    summation = a
+    for k in 1:min(n_bra, n_ket)-1
+        a = a * coeff(k)
+        summation += a
+    end
+    
+    return exp(- newG^2 / 2) * (i0 + summation) # (*)
+    # return exp(- newG^2 / 2) * i0 * (1 + summation)
+end
+
 function overlapNaive(
-    n_bra::Int,
-    m_bra::Real,
-    n_ket::Int,
-    m_ket::Real,
-    j::Int
-)
+    n_bra::T,
+    m_bra::T,
+    n_ket::T,
+    m_ket::T,
+    j::T
+) where T <: Int
     # This will deal with the special case first!
     if m_bra == m_ket && n_bra != n_ket
         return 0
@@ -74,43 +122,25 @@ function overlapNaive(
     return term1 * term2
 end
 
-
-function overlap(
-    n_bra::Int,
-    m_bra::Real,
-    n_ket::Int,
-    m_ket::Real,
-    j::Int
-)
-    # Dealing with the special cases first!
-    # 1st special case N' = N, m' != m.
+function overlapNaiveV2(
+    n_bra::T,
+    m_bra::T,
+    n_ket::T,
+    m_ket::T,
+    j::T
+) where T <: Int
+    # This will deal with the special case first!
     if m_bra == m_ket && n_bra != n_ket
         return 0
     end
-    # 2nd special case N' = N, m' = m.
-    if m_bra == m_ket && n_bra == n_ket
-        return 1
-    end
 
     newG = G(j) * (m_bra - m_ket)
-    i0 =  (-1)^(n_ket) * newG^(n_bra + n_ket) / 
-            sqrt(newFactorial(n_bra) * newFactorial(n_ket))
-    
-    coeff(k) = (-1) * newG^(-2) * (n_bra - k) * (n_ket - k) / (k + 1)
 
-    # ---------------------------------- *works*
-    a = coeff(0)
-    summation = a
-    for k in 1:min(n_bra, n_ket)-1
-        a = a * coeff(k)
-        summation += a
-    end
-    
-    return exp(- newG^2 / 2) * i0 * (1 + summation)
-
-    # ---------------------------------- *works but is slower*
-    # summation = i0 * (1 + sum(prod(coeff(i) for i in 0:k) for k in 0:min(n_bra, n_ket)-1))
-    # return exp(- newG^2 / 2) * summation
+    summation(k) = (-1)^(n_ket - k) * newG^(n_bra + n_ket - 2*k) * 
+        sqrt(bigFactorial(n_bra) * bigFactorial(n_ket)) /
+        (bigFactorial(k) * bigFactorial(n_bra - k) * bigFactorial(n_ket - k))
+        
+    return exp(- newG^2 / 2) * sum(summation(k) for k=0:min(n_bra, n_ket))
 end
 
 
@@ -181,12 +211,144 @@ function hamiltonian(n_max::Int, j::Int)
     temp
 end
 
+function hamiltonianNaive(n_max::Int, j::Int)
+    n_range = 0:n_max
+    m_range = -j:j
+    dim = (2*j + 1) * (n_max + 1)
+    temp = zeros(dim, dim)
+    col = 1
+    for n_ket = n_range, m_ket = m_range
+        row = 1
+        for n_bra = n_range, m_bra = m_range
+            if row >= col
+                # Me encuentro en el estado (n_bra, m_bra, n_ket, m_ket)
+                if n_bra == n_ket && m_bra == m_ket
+                    temp[row, col] = ω * (n_ket - (G(j) * m_ket)^2)
+                elseif m_bra == m_ket + 1
+                    temp[row, col] = temp[col, row] = (- ω0 / 2) * 
+                        cPlus(j, m_ket) * 
+                        overlapNaive(n_bra, m_bra, n_ket, m_ket, j)
+                elseif m_bra == m_ket - 1
+                    temp[row, col] = temp[col, row] = (- ω0 / 2) * 
+                        cMinus(j, m_ket) * 
+                        overlapNaive(n_bra, m_bra, n_ket, m_ket, j)
+                end
+            end
+            row += 1
+        end
+        col += 1
+    end
+    temp
+end
+
+function hamiltonianNaiveV2(n_max::Int, j::Int)
+    n_range = 0:n_max
+    m_range = -j:j
+    dim = (2*j + 1) * (n_max + 1)
+    temp = zeros(dim, dim)
+    col = 1
+    for n_ket = n_range, m_ket = m_range
+        row = 1
+        for n_bra = n_range, m_bra = m_range
+            if row >= col
+                # Me encuentro en el estado (n_bra, m_bra, n_ket, m_ket)
+                if n_bra == n_ket && m_bra == m_ket
+                    temp[row, col] = ω * (n_ket - (G(j) * m_ket)^2)
+                elseif m_bra == m_ket + 1
+                    temp[row, col] = temp[col, row] = (- ω0 / 2) * 
+                        cPlus(j, m_ket) * 
+                        overlapNaiveV2(n_bra, m_bra, n_ket, m_ket, j)
+                elseif m_bra == m_ket - 1
+                    temp[row, col] = temp[col, row] = (- ω0 / 2) * 
+                        cMinus(j, m_ket) * 
+                        overlapNaiveV2(n_bra, m_bra, n_ket, m_ket, j)
+                end
+            end
+            row += 1
+        end
+        col += 1
+    end
+    temp
+end
+
+# Where k is the value of max( N( mx=0 ) )
+# and x is the value of mx for a given state
+# The resulting value of the parabola is the ceiling for N
+p(n_max, j, k)              = j^2 / (n_max - k)
+parabola(n_max, j, k, x)    = x^2 / p(n_max, j, k) + k
+
+undesired_indices(vector_generator) = (
+    index for (index, vector) in enumerate(vector_generator)
+    if all(x -> x == vector[1], vector))
+
+function hamiltonianSpecialCase(n_max::Int, j::Int, mx0::Int)
+    n_range = 0:n_max
+    m_range = -j:j
+    dim     = (2*j + 1) * (n_max + 1)
+    temp    = zeros(dim, dim)
+    conditional(n, m) = n >= parabola(n_max, j, mx0, m)
+
+    col = 1
+    for n_ket = n_range, m_ket = m_range
+        row = 1
+        for n_bra = n_range, m_bra = m_range
+            if  row >= col && !(conditional(n_ket, m_ket) || conditional(n_bra, m_bra))
+                if n_bra == n_ket && m_bra == m_ket
+                    temp[row, col] = ω * (n_ket - (G(j) * m_ket)^2)
+                elseif m_bra == m_ket + 1
+                    temp[row, col] = temp[col, row] = (- ω0 / 2) * 
+                        cPlus(j, m_ket) * 
+                        overlap(n_bra, m_bra, n_ket, m_ket, j)
+                elseif m_bra == m_ket - 1
+                    temp[row, col] = temp[col, row] = (- ω0 / 2) * 
+                        cMinus(j, m_ket) * 
+                        overlap(n_bra, m_bra, n_ket, m_ket, j)
+                end
+            end
+            row += 1
+        end
+        col += 1
+    end
+    undesired_rows = undesired_indices(eachrow(temp)) |> collect
+    undesired_cols = undesired_indices(eachcol(temp)) |> collect
+    temp[1:end .∉ [undesired_rows], 1:end .∉ [undesired_cols]]
+    # temp
+end
+
+function hamiltonianSpecialCaseOnes(n_max::Int, j::Int, mx0::Int)
+    n_range = 0:n_max
+    m_range = -j:j
+    dim     = (2*j + 1) * (n_max + 1)
+    temp    = zeros(dim, dim)
+    conditional(n, m) = n >= parabola(n_max, j, mx0, m)
+
+    col = 1
+    for n_ket = n_range, m_ket = m_range
+        row = 1
+        for n_bra = n_range, m_bra = m_range
+            if !(conditional(n_ket, m_ket) || conditional(n_bra, m_bra))
+                temp[row, col] = 1
+            end
+            row += 1
+        end
+        col += 1
+    end
+    # undesired_rows = undesired_indices(eachrow(temp)) |> collect
+    # undesired_cols = undesired_indices(eachcol(temp)) |> collect
+    # temp[1:end .∉ [undesired_rows], 1:end .∉ [undesired_cols]]
+    temp
+end
+
 
 """
 When a matrix containing the overlaps is provided they wont be computed,
 instead the overlaps in the matrix will be used.
 """
-function hamiltonian(n_max::Int, j::Int, overlaps::AbstractArray)
+function hamiltonian(
+    n_max::Int, 
+    j::Int, 
+    overlaps::AbstractArray
+)
     n_range = 0:n_max
     m_range = -j:j
     # dim = (2*j + 1) * (n_max + 1)
@@ -219,10 +381,7 @@ end
 
 
 # Find the solution of the matrix representation of the hamiltonian
-function hamiltonianSolution(matrix::AbstractArray)
-    eigen_data = LinearAlgebra.eigen(matrix)
-    (values = eigen_data.values, vectors = eigen_data.vectors)
-end
+hamiltonianSolution(matrix::AbstractArray) = LinearAlgebra.eigen(matrix)
 
 
 # To find converged states and their kappas
@@ -230,7 +389,7 @@ function convergenceCriterion(
     j::Int, 
     matrix::AbstractArray, 
     epsilon::Float64
-    )
+)
     # Coefficients that correspond to the last n in every eigen vector
     # nth_coefficients = n_max * (2*j + 1) + 1
     index_of_first_nth_coeff = size(matrix)[1] - 2*j
@@ -252,7 +411,7 @@ function convergenceCriterion(
     j::Int, 
     eigendata::NamedTuple{(:values, :vectors), Tuple{Array{T,1}, Array{T,2}}}, 
     epsilon::T
-    ) where {T <: Float64}
+) where {T <: Float64}
     # Coefficients that correspond to the last n in every eigen vector
     index_of_first_nth_coeff = size(eigendata.values)[1] - 2*j
     kappas = vec(sum(eigendata.vectors[index_of_first_nth_coeff:end,:].^2, dims=1))
@@ -270,7 +429,7 @@ function selectionCriterion(
     j::Int, 
     matrix::Array{T,2},
     epsilon::T
-    ) where {T <: Float64}
+) where {T <: Float64}
     m_range = -j:j
     tmp = Array{NTuple{2, Int}}(undef, length(m_range)*size(matrix)[2])
     for (i, col) in enumerate(eachcol(matrix)), (index, m) in enumerate(m_range)
@@ -302,83 +461,62 @@ padding(var) = lpad(var, 3, "0")
 
 file_name(file, n_max, j) = "data/$(file)_$(n_max |> padding)_$(j |> padding).csv"
 
-
-function write_hamiltonian(n_max::Int, j::Int)
-    # Check the existence of the file
-    which_hamiltonian = file_name("hamiltonian", n_max, j)
-    file_exists = isfile(which_hamiltonian)
-    !file_exists ? touch(which_hamiltonian) : return "Hamiltonian representation was already computed!"
-    
-    # Compute the hamiltonian representation and save it
-    data = hamiltonian(n_max, j)
-    open(which_hamiltonian, "w") do io
+function write_file(file_name::String, data::Any)
+    open(file_name, "w") do io
         DelimitedFiles.writedlm(io, data, ',')
     end
 end
 
+function generate_data(
+    n_max::Int, 
+    j::Int, 
+    eps_cvg::Float64, 
+    eps_sel::Float64
+)
+    names = [
+        "hamiltonian", 
+        "eigvals", 
+        "eigvects", 
+        "cvgvals", 
+        "cvgvects", 
+        "sel"
+    ]
 
-function write_eig_data(n_max, j)
-    # Assuming that (*) files already exist!
-    which_hamiltonian = file_name("hamiltonian", n_max, j)      # *
-    which_eig_vals = file_name("eigvals", n_max, j)
-    which_eig_vects = file_name("eigvects", n_max, j)
-
-    files = [which_eig_vals, which_eig_vects]
+    files = file_name.(
+        names, 
+        n_max, 
+        j
+    )
+    # Check the existence of files
     files_existence = isfile.(files)
-    !all(files_existence) ? touch.(files) : return "Eigendata was already computed!"
-
-    hamiltonian = DelimitedFiles.readdlm(which_hamiltonian, ',', Float64)
-    data = hamiltonianSolution(hamiltonian)
-
-    open(which_eig_vals, "w") do io
-        DelimitedFiles.writedlm(io, data.values, ',')
+    if all(files_existence)
+        return println("Data set files already exist!")
     end
-    open(which_eig_vects, "w") do io
-        DelimitedFiles.writedlm(io, data.vectors, ',')
-    end
-end
+    touch.(files)
 
+    # Compute and write hamiltonian matrix
+    h = hamiltonian(n_max, j)
+    write_file(files[1], h)
 
-function write_cvg_data(n_max, j, epsilon)
-    # Assuming that (*) files already exist!
-    which_eig_vals      = file_name("eigvals", n_max, j)        # *
-    which_eig_vects     = file_name("eigvects", n_max, j)       # *
-    which_cvg_vals      = file_name("cvgvals", n_max, j)
-    which_cvg_vects     = file_name("cvgvects", n_max, j)
+    # Compute and write matrix eigendata
+    h_sol   = hamiltonianSolution(h)
+    write_file(files[2], h_sol.values)
+    write_file(files[3], h_sol.vectors)
+    h = nothing
 
-    files = [which_cvg_vals, which_cvg_vects]
-    files_existence = isfile.(files)
-    !all(files_existence) ? touch.(files) : return "Converged data was already computed!"
+    # Compute and write the matrix converged eigendata
+    h_cvg   = convergenceCriterion(j, h_sol, eps_cvg)
+    write_file(files[4], h_cvg.values)
+    write_file(files[5], h_cvg.vectors)
+    h_sol = nothing
 
-    eig_vals = DelimitedFiles.readdlm(which_eig_vals, ',', Float64) |> vec
-    eig_vects = DelimitedFiles.readdlm(which_eig_vects, ',', Float64)
-    eigendata = (values = eig_vals, vectors = eig_vects)
-    data = convergenceCriterion(j, eigendata, epsilon)
+    # Compute and write max(Nmax(mx))
+    h_sel   = selectionCriterion(j, h_cvg.vectors, eps_sel)
+    write_file(files[6], [h_sel.ms h_sel.ns])
+    h_cvg = nothing
+    h_sol = nothing
 
-    open(which_cvg_vals, "w") do io
-        DelimitedFiles.writedlm(io, data.values, ',')
-    end
-    open(which_cvg_vects, "w") do io
-        DelimitedFiles.writedlm(io, data.vectors, ',')
-    end
-end
-
-
-function write_sel_data(n_max, j, epsilon)
-    # Assuming that (*) files already exist!
-    which_hamiltonian   = file_name("hamiltonian", n_max, j)    # *
-    which_cvg_vects     = file_name("cvgvects", n_max, j)       # *
-    which_sel_data      = file_name("seldata", n_max, j)
-
-    file_exist = isfile(which_sel_data)
-    !file_exist ? touch(which_sel_data) : return "Selected data was already computed!"
-
-    cvg_vects = DelimitedFiles.readdlm(which_cvg_vects, ',', Float64)
-
-    data = selectionCriterion(j, cvg_vects, epsilon)
-    open(which_sel_data, "w") do io
-        DelimitedFiles.writedlm(io, [data.ms data.ns],  ',')
-    end
+    println("Finished computing data set files !")
 end
 
 
@@ -426,7 +564,6 @@ end
 function hamiltonianSparse(n_max::Int, j::Int)
   n_range = 0:n_max
   m_range = -j:j
-  dim = (1*j + 1) * (n_max + 1)
   # If I knoew beforehand how many elements are calculated I would be able
   # to initialize these lists instead of just appending to them.
   row_loc = Int[]
