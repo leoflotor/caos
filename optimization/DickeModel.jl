@@ -1,27 +1,63 @@
 """
-Dicke model module. Provides solution to matrices in the efficient coherent
-basis using a differentiated approach to contruct the matrix.
+Dicke model module. Provides solution to Hamiltonians in the efficient coherent
+basis using a differentiated approach reducing the size of the matrix by 
+eliminating those column and row vectors that do not contribute to the final 
+solution.
+
+# Comments
+The preliminary studies to determine the contribution of a given state where 
+done by using a convergence tolerance and selection tolerance of 1E-6 and 
+1E-3, respectively.
 """
 module DickeModel
 
-import LinearAlgebra
+#==============================
+Required packages
+===============================#
 
-const ω = 1
-const ω0 = 1
-const γc = sqrt(ω * ω0) / 2
-const γ = 2 * γc
+import LinearAlgebra
+import DelimitedFiles
+# import Parameters
+
+
+#==============================
+Constants definition
+===============================#
+
+const ω     = 1
+const ω0    = 1
+const γc    = sqrt(ω * ω0) / 2
+const γ     = 2 * γc
+
+mutable struct Constants{T<:Float64}
+    ω   :: T
+    ω0  :: T
+    γc  :: T
+    γ   :: T
+    Constants() = (K = new{Float64}(); 
+        K.ω     = 1.; 
+        K.ω0    = 1.; 
+        K.γc    = sqrt(ω * ω0) / 2; 
+        K.γ     = 2 * γc;
+        return K)
+end
+
+
+#==============================
+Quality of life functions
+===============================#
 
 G(j) = (2 * γ) / (ω * sqrt(2 * j)) # what was the meaning of G?
 
 bigFactorial(n) = (factorial ∘ big)(n)
 
-cMinus(j::Int, m::Int) = j >= abs(m) ?
-                         sqrt(j * (j + 1) - m * (m - 1)) :
-                         throw(ErrorException("The absolute value of m cannot bet greater than j."))
+cMinus(j::Int, m::Int) = j >= abs(m) ? 
+    sqrt(j * (j + 1) - m * (m - 1)) : 
+    throw(ErrorException("Found j < abs(m), (j, m) = ($j, $m)."))
 
-cPlus(j::Int, m::Int) = j >= abs(m) ?
-                        sqrt(j * (j + 1) - m * (m + 1)) :
-                        throw(ErrorException("The absolute value of m cannot bet greater than j."))
+cPlus(j::Int, m::Int) = j >= abs(m) ? 
+    sqrt(j * (j + 1) - m * (m + 1)) : 
+    throw(ErrorException("Found j < abs(m), (j, m) = ($j, $m)."))
 
 # Find the solution of the matrix representation of the hamiltonian
 hamiltonianSolution(matrix::AbstractArray) = LinearAlgebra.eigen(matrix)
@@ -29,6 +65,17 @@ hamiltonianSolution(matrix::AbstractArray) = LinearAlgebra.eigen(matrix)
 # Parabola related functions
 p(n_max, j, k) = j^2 / (n_max - k)
 parabola(n_max, j, k, x) = x^2 / p(n_max, j, k) + k
+
+"""
+    vertex_approx(n_max, j, updown_factor)
+
+Plane approximation of the dependency of `max(N(m = 0))` regarding the initial 
+parameters `n_max` and `j`.
+"""
+vertex_approx(n_max::Int, j::Int, updown_factor=0)::Float64 = (
+    0.9480705288984961 * n_max 
+    - 1.1205718648719307 * j 
+    + (-7.2622607715155185 + updown_factor))
 
 # Indices where all the elements of a vector in a matrix (column or row)
 # are equal to cero. These vectors do not contribute to the final solution.
@@ -41,25 +88,33 @@ undesired_indices_nothing(vector_set) = (
     if all(x -> x == nothing, vector))
 
 
+#==============================
+Dicke model
+===============================#
+
 """
-Computes a single overlap for a given < N',m' | N,m >.
+    overlap(n_bra, m_bra, n_ket, m_ket, j)
+
+Computes the overlap between two states given by `< N', m' | N, m >`.
 
 # Arguments
-- `n_bra::Integer`: pending
-- `m_bra::Integer`: pending
-- `n_ket::Integer`: pending
-- `m_ket::Integer`: pending
-- `j::Integer`: pending
+- `n_bra::Int`: bra-state `N'`.
+- `m_bra::Int`: bra-state `m'`.
+- `n_ket::Int`: ket-state `N`.
+- `m_ket::Int`: ket-state `m`.
+- `j::Int`: pending.
 
 # Comments
-Two special cases can occur which this function is capable to deal with:
+Two special cases can occur:
 
-1) N' = N, m' != m
-
-2) N' = N, m' = m
+1) When N' = N and m' != m the `overlap()` → 0,
+2) when N' = N, m' = m the `overlap()` → 1.
 
 This function computes the overlaps in an iterative manner from an initial
 term `i0` that corresponds to the first term of the summatory.
+
+Both, the iterative method and the special cases, are implemented to reduce
+memory allocations and reduce computing times.
 """
 function overlap(
     n_bra::T,
@@ -77,8 +132,9 @@ function overlap(
     if m_bra == m_ket && n_bra == n_ket
         return 1
     end
-
+    # Just renaming a factor to reduce linesize.
     newG = G(j) * (m_bra - m_ket)
+    # Initial term of the summatory.
     i0 = (-1)^(n_ket) * newG^(n_bra + n_ket) /
          sqrt(bigFactorial(n_bra) * bigFactorial(n_ket))
 
@@ -96,17 +152,19 @@ end
 
 
 """
+    overlapCollection(n_max, j)
+
 Generates a matrix to contain all the overlaps for the intervals between 
 `0:n_max` and `-j:j`.
 
+# Arguments
+- `n_max::Int`: parameter used to truncate the Hamiltonian.
+- `j::Int`: pending.
+
+# Comments
 The matrix is constructed as a lower diagonal matrix and its elements are
 transposed to the upper half due to the simmetry of the problem (?).
 
-# Arguments
-- `n_max::Integer`: pending
-- `j::Integer`: pending
-
-# Comments
 Maybe the upper half is unnecessary.
 """
 function overlapCollection(
@@ -117,6 +175,7 @@ function overlapCollection(
     m_range = -j:j
     dim = (2 * j + 1) * (n_max + 1)
     temp = Array{Float64}(undef, dim, dim)
+
     col = 1
     for n_ket = n_range, m_ket = m_range
         row = 1
@@ -128,7 +187,7 @@ function overlapCollection(
         end
         col += 1
     end
-    temp
+    return temp
 end
 
 
@@ -139,7 +198,8 @@ function hamiltonian(
     n_range = 0:n_max
     m_range = -j:j
     dim = (2 * j + 1) * (n_max + 1)
-    temp = zeros(dim, dim)
+    mat = zeros(dim, dim)
+
     col = 1
     for n_ket = n_range, m_ket = m_range
         row = 1
@@ -147,22 +207,22 @@ function hamiltonian(
             if row >= col
                 # Me encuentro en el estado (n_bra, m_bra, n_ket, m_ket)
                 if n_bra == n_ket && m_bra == m_ket
-                    temp[row, col] = ω * (n_ket - (G(j) * m_ket)^2)
+                    mat[row, col] = ω * (n_ket - (G(j) * m_ket)^2)
                 elseif m_bra == m_ket + 1
-                    temp[row, col] = temp[col, row] = (-ω0 / 2) *
-                                                      cPlus(j, m_ket) *
-                                                      overlap(n_bra, m_bra, n_ket, m_ket, j)
+                    mat[row, col] = mat[col, row] = (-ω0 / 2) *
+                                                    cPlus(j, m_ket) *
+                                                    overlap(n_bra, m_bra, n_ket, m_ket, j)
                 elseif m_bra == m_ket - 1
-                    temp[row, col] = temp[col, row] = (-ω0 / 2) *
-                                                      cMinus(j, m_ket) *
-                                                      overlap(n_bra, m_bra, n_ket, m_ket, j)
+                    mat[row, col] = mat[col, row] = (-ω0 / 2) *
+                                                    cMinus(j, m_ket) *
+                                                    overlap(n_bra, m_bra, n_ket, m_ket, j)
                 end
             end
             row += 1
         end
         col += 1
     end
-    temp
+    return mat
 end
 
 
@@ -173,9 +233,9 @@ function hamiltonian(
 ) where {T<:Int}
     n_range = 0:n_max
     m_range = -j:j
-    # dim = (2*j + 1) * (n_max + 1)
-    dim = length(m_range) * length(n_range)
-    matrix = zeros(dim, dim)
+    dim = (2 * j + 1) * (n_max + 1)
+    mat = zeros(dim, dim)
+
     col = 1
     for n_ket = n_range, m_ket = m_range
         row = 1
@@ -183,29 +243,29 @@ function hamiltonian(
             if row >= col
                 # Me encuentro en el estado (n_bra, m_bra, n_ket, m_ket)
                 if n_bra == n_ket && m_bra == m_ket
-                    matrix[row, col] = ω * (n_ket - (G(j) * m_ket)^2)
+                    mat[row, col] = ω * (n_ket - (G(j) * m_ket)^2)
                 elseif m_bra == m_ket + 1
-                    matrix[row, col] = matrix[col, row] = (-ω0 / 2) *
-                                                          cPlus(j, m_ket) *
-                                                          overlaps[row, col]
+                    mat[row, col] = mat[col, row] = (-ω0 / 2) *
+                                                    cPlus(j, m_ket) *
+                                                    overlaps[row, col]
                 elseif m_bra == m_ket - 1
-                    matrix[row, col] = matrix[col, row] = (-ω0 / 2) *
-                                                          cMinus(j, m_ket) *
-                                                          overlaps[row, col]
+                    mat[row, col] = mat[col, row] = (-ω0 / 2) *
+                                                    cMinus(j, m_ket) *
+                                                    overlaps[row, col]
                 end
             end
             row += 1
         end
         col += 1
     end
-    matrix
+    return mat
 end
 
 
 function convergenceCriterion(
     j::Int,
-    eigendata::LinearAlgebra.Eigen{Float64,Float64,Matrix{Float64},Vector{Float64}},
-    epsilon::T=10^-3
+    eigendata::LinearAlgebra.Eigen,
+    epsilon::T=1E-3 # The used value on previous computations was 1E-6
 ) where {T<:Float64}
     # Coefficients that correspond to the last n in every eigen vector
     index_of_first_nth_coeff = size(eigendata.values)[1] - 2 * j
@@ -224,7 +284,7 @@ end
 function selectionCriterion(
     j::Int,
     matrix::Array{T,2},
-    epsilon::T=10^-3
+    epsilon::T=1E-3
 ) where {T<:Float64}
     m_range = -j:j
     tmp = Array{NTuple{2,Int}}(undef, length(m_range) * size(matrix)[2])
@@ -248,42 +308,85 @@ function selectionCriterion(
         tmp_filter[i] = m_filter[index_max]
     end
 
-    (ns=map(x -> x[1], tmp_filter),
+    return (ns=map(x -> x[1], tmp_filter),
         ms=map(x -> x[2], tmp_filter))
 end
 
 
-function hamiltonianSpecialCase(
+"""
+    specialCriterion(max_indexes, eigendata, epsilon=1E-3)
+
+This function gathers the entries in the positions given in `max_indexes` of
+all the eigenvectors stored in `eigendata`, it determines which eigenvectors
+have converged and returns them alongside their respective eigenvalues.
+
+# Arguments
+- `max_indexes::Array{Int, 1}`: ordered array of 1's and 0's that align with `(N(m_i), m_i)` ∀ `m_i` ∈ {-j:j} to filter those where `N(m_i)` → `maxN(m_i)`.
+- `eigendata::LinearAlgebra.Eigen`: resulting eigenvalues and eigenvectors from `LinearAlgebra.eigen()`.
+- `epsilon::Float64=1E-3`: default tolerance, can be changed.
+"""
+function specialCriterion(
+    max_indexes::Array{Int,1},
+    eigendata::LinearAlgebra.Eigen,
+    epsilon::Float64=1E-3 # The used value on previous computations was 1E-6
+)
+    criterion = ((sum(abs2, eigendata.vectors[max_indexes.==1, :], dims=1) .< epsilon)
+                 |>
+                 vec)
+    return (values=eigendata.values[criterion],
+        vectors=eigendata.vectors[:, criterion])
+end
+
+
+#==============================
+Differentiated Dicke model
+===============================#
+
+"""
+    hamiltonianSpecial(n_max, j, maxN0)
+
+Computes the Hamiltonian by employing a differentiated approach to determine
+which states do contribute to the system.
+
+# Arguments
+- `n_max::Int`: parameter used to truncate the Hamiltonian.
+- `j::Int`: pending. 
+- `maxN0::Int`: expected value of max(Nmax(m = 0)).
+"""
+function hamiltonianSpecial(
     n_max::T,
     j::T,
-    mx0::T
+    maxN0::T
 ) where {T<:Int}
     n_range = 0:n_max
     m_range = -j:j
     dim = (2 * j + 1) * (n_max + 1)
-    temp = zeros(dim, dim) # store matrix entries
-    max_indexes = zeros(Int8, dim) # store indexes that correspond to max(Nmax(m))
-    conditional(n, m) = n >= parabola(n_max, j, mx0, m)
+    mat = zeros(dim, dim)  # Initialize matrix
+    max_indexes = zeros(Int, dim)  # Initialize max(Nmax(m)) vector
+    conditional(n, m) = n >= parabola(n_max, j, maxN0, m)
 
     col = 1
     for n_ket = n_range, m_ket = m_range
         row = 1
         for n_bra = n_range, m_bra = m_range
             # Only compute the bottom half of the matrix by taking advantage
-            # on the symmetry of the hamiltonian
+            # of the symmetry of the hamiltonian
             if row >= col && !(conditional(n_ket, m_ket) || conditional(n_bra, m_bra))
                 if n_bra == n_ket && m_bra == m_ket
-                    temp[row, col] = ω * (n_ket - (G(j) * m_ket)^2)
+                    mat[row, col] = ω * (n_ket - (G(j) * m_ket)^2)
                 elseif m_bra == m_ket + 1
-                    temp[row, col] = temp[col, row] = (-ω0 / 2) *
-                                                      cPlus(j, m_ket) *
-                                                      overlap(n_bra, m_bra, n_ket, m_ket, j)
+                    mat[row, col] = mat[col, row] = (-ω0 / 2) *
+                                                    cPlus(j, m_ket) *
+                                                    overlap(n_bra, m_bra, n_ket, m_ket, j)
                 elseif m_bra == m_ket - 1
-                    temp[row, col] = temp[col, row] = (-ω0 / 2) *
-                                                      cMinus(j, m_ket) *
-                                                      overlap(n_bra, m_bra, n_ket, m_ket, j)
+                    mat[row, col] = mat[col, row] = (-ω0 / 2) *
+                                                    cMinus(j, m_ket) *
+                                                    overlap(n_bra, m_bra, n_ket, m_ket, j)
                 end
-                if col == 1 && n_bra == (parabola(n_max, j, mx0, m_bra) ÷ 1)
+                # The max(Nmax(m)) for each m ∈ -j:j is the same for all
+                # the column vectors. Thus it is only necessary to compute it
+                # once.
+                if col == 1 && n_bra == (parabola(n_max, j, maxN0, m_bra) ÷ 1)
                     max_indexes[row] = 1
                 end
             end
@@ -292,28 +395,83 @@ function hamiltonianSpecialCase(
         col += 1
     end
     # Undesired rows and columns are the same due to the simmetry of the
-    # hamiltonian.
+    # hamiltonian. But I am not certain this holds for every case.
     # NOTE. I should consider REMOVING one of them to avoid computing the same information twice.
-    undesired_rows = undesired_indices(eachrow(temp)) |> collect
-    undesired_cols = undesired_indices(eachcol(temp)) |> collect
+    undesired_rows = undesired_indices(eachrow(mat)) |> collect
+    undesired_cols = undesired_indices(eachcol(mat)) |> collect
     # Filtered matrix and indexes list
-    temp = temp[1:end.∉[undesired_rows], 1:end.∉[undesired_cols]]
+    mat = mat[1:end.∉[undesired_rows], 1:end.∉[undesired_cols]]
     max_indexes = max_indexes[1:end.∉[undesired_rows]] # |> x -> findall(==(1), x)
-
-    # temp[temp .!= 0 .&& abs.(temp) .<= 1E-16] .= 0.0
-    max_indexes, temp
+    # NOTE. How small is small to be zero?
+    # mat[mat .!= 0 .&& abs.(mat) .<= 1E-16] .= 0.0
+    return max_indexes, mat
 end
 
-function hamiltonianSpecialCaseOnes(
+
+function hamiltonianSpecial(
+    n_max   :: T,
+    j       :: T
+) where {T<:Int}
+    maxN0 = vertex_approx(n_max, j)
+    n_range = 0:n_max
+    m_range = -j:j
+    dim = (2 * j + 1) * (n_max + 1)
+    mat = zeros(dim, dim)  # Initialize matrix
+    max_indexes = zeros(Int, dim)  # Initialize max(Nmax(m)) vector
+    conditional(n, m) = n >= parabola(n_max, j, maxN0, m)
+
+    col = 1
+    for n_ket = n_range, m_ket = m_range
+        row = 1
+        for n_bra = n_range, m_bra = m_range
+            # Only compute the bottom half of the matrix by taking advantage
+            # of the symmetry of the hamiltonian
+            if row >= col && !(conditional(n_ket, m_ket) || conditional(n_bra, m_bra))
+                if n_bra == n_ket && m_bra == m_ket
+                    mat[row, col] = ω * (n_ket - (G(j) * m_ket)^2)
+                elseif m_bra == m_ket + 1
+                    mat[row, col] = mat[col, row] = (-ω0 / 2) *
+                                                    cPlus(j, m_ket) *
+                                                    overlap(n_bra, m_bra, n_ket, m_ket, j)
+                elseif m_bra == m_ket - 1
+                    mat[row, col] = mat[col, row] = (-ω0 / 2) *
+                                                    cMinus(j, m_ket) *
+                                                    overlap(n_bra, m_bra, n_ket, m_ket, j)
+                end
+                # The max(Nmax(m)) for each m ∈ -j:j is the same for all
+                # the column vectors. Thus it is only necessary to compute it
+                # once.
+                if col == 1 && n_bra == (parabola(n_max, j, maxN0, m_bra) ÷ 1)
+                    max_indexes[row] = 1
+                end
+            end
+            row += 1
+        end
+        col += 1
+    end
+    # Undesired rows and columns are the same due to the simmetry of the
+    # hamiltonian. But I am not certain this holds for every case.
+    # NOTE. I should consider REMOVING one of them to avoid computing the same information twice.
+    undesired_rows = undesired_indices(eachrow(mat)) |> collect
+    undesired_cols = undesired_indices(eachcol(mat)) |> collect
+    # Filtered matrix and indexes list
+    mat = mat[1:end.∉[undesired_rows], 1:end.∉[undesired_cols]]
+    max_indexes = max_indexes[1:end.∉[undesired_rows]] # |> x -> findall(==(1), x)
+    # NOTE. How small is small to be zero?
+    # mat[mat .!= 0 .&& abs.(mat) .<= 1E-16] .= 0.0
+    return max_indexes, mat
+end
+
+function hamiltonianSpecialOnes(
     n_max::T,
     j::T,
-    mx0::T
+    maxN0::T
 ) where {T<:Int}
     n_range = 0:n_max
     m_range = -j:j
     dim = (2 * j + 1) * (n_max + 1)
     temp = zeros(dim, dim)
-    conditional(n, m) = n >= parabola(n_max, j, mx0, m)
+    conditional(n, m) = n >= parabola(n_max, j, maxN0, m)
 
     col = 1
     for n_ket = n_range, m_ket = m_range
@@ -329,7 +487,7 @@ function hamiltonianSpecialCaseOnes(
     # undesired_rows = undesired_indices(eachrow(temp)) |> collect
     # undesired_cols = undesired_indices(eachcol(temp)) |> collect
     # temp[1:end .∉ [undesired_rows], 1:end .∉ [undesired_cols]]
-    temp
+    return temp
 end
 
 
@@ -346,13 +504,13 @@ end
 function hamiltonianBrakets(
     n_max::T,
     j::T,
-    mx0::T
+    maxN0::T
 ) where {T<:Int}
     n_range = 0:n_max
     m_range = -j:j
     dim = (2 * j + 1) * (n_max + 1)
     temp = Array{Union{Braket,Nothing}}(nothing, dim, dim)
-    conditional(n, m) = n >= parabola(n_max, j, mx0, m) # To filter states
+    conditional(n, m) = n >= parabola(n_max, j, maxN0, m) # To filter states
 
     col = 1
     for n_ket = n_range, m_ket = m_range
@@ -377,7 +535,7 @@ function hamiltonianBrakets(
                 end
                 # Only for the first column because for all m's this process
                 # will render the same max(Nmax(m)) respecively
-                if col == 1 && n_bra == (parabola(n_max, j, mx0, m_bra) ÷ 1)
+                if col == 1 && n_bra == (parabola(n_max, j, maxN0, m_bra) ÷ 1)
                     temp[row, col].falsy = true
                 end
             end
@@ -387,6 +545,68 @@ function hamiltonianBrakets(
     end
     undesired_rows = undesired_indices_nothing(eachrow(temp)) |> collect
     temp[1:end.∉[undesired_rows], 1:end.∉[undesired_rows]]
+end
+
+#==============================
+Save data
+===============================#
+
+padding(var) = lpad(var, 3, "0")
+
+file_name(file, n_max, j) = "data/$(file)_$(n_max |> padding)_$(j |> padding).csv"
+
+function write_file(file_name::String, data::Any)
+    open(file_name, "w") do io
+        DelimitedFiles.writedlm(io, data, ',')
+    end
+end
+
+function generate_data(
+    n_max::Int,
+    j::Int,
+    eps_cvg::Float64,
+    eps_sel::Float64
+)
+    names = [
+        "hamiltonian",
+        "eigvals",
+        "eigvects",
+        "cvgvals",
+        "cvgvects",
+        "sel"
+    ]
+
+    files = file_name.(names, n_max, j)
+    # Check the existence of files
+    files_existence = isfile.(files)
+    if all(files_existence)
+        return println("Data set files already exist!")
+    end
+    touch.(files)
+
+    # Compute and write hamiltonian matrix
+    h = hamiltonian(n_max, j)
+    write_file(files[1], h)
+
+    # Compute and write matrix eigendata
+    h_sol = hamiltonianSolution(h)
+    write_file(files[2], h_sol.values)
+    write_file(files[3], h_sol.vectors)
+    h = nothing
+
+    # Compute and write the matrix converged eigendata
+    h_cvg = convergenceCriterion(j, h_sol, eps_cvg)
+    write_file(files[4], h_cvg.values)
+    write_file(files[5], h_cvg.vectors)
+    h_sol = nothing
+
+    # Compute and write max(Nmax(mx))
+    h_sel = selectionCriterion(j, h_cvg.vectors, eps_sel)
+    write_file(files[6], [h_sel.ms h_sel.ns])
+    h_cvg = nothing
+    h_sol = nothing
+
+    println("Finished computing data set files !")
 end
 
 end # module
