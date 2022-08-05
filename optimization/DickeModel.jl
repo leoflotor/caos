@@ -17,28 +17,32 @@ Required packages
 
 import LinearAlgebra
 import DelimitedFiles
-# import Parameters
 
 
 #==============================
-Constants definition
+Parameter definitions
 ===============================#
 
-const ω     = 1
-const ω0    = 1
+const ω     = 1.
+const ω0    = 1.
 const γc    = sqrt(ω * ω0) / 2
 const γ     = 2 * γc
 
-mutable struct Constants{T<:Float64}
+# The good thing about using this struct would be that the parameters
+# can be changed at anytime. On the contrary, if the constants are defined
+# as above, they cannot be changed unless the usr modifies the source code.
+# Even if they modify the source, they would need to reload the package for
+# the changes to take effect.
+mutable struct Params{T<:Float64}
     ω   :: T
     ω0  :: T
     γc  :: T
     γ   :: T
-    Constants() = (K = new{Float64}(); 
-        K.ω     = 1.; 
-        K.ω0    = 1.; 
-        K.γc    = sqrt(ω * ω0) / 2; 
-        K.γ     = 2 * γc;
+    Params() = (K = new{Float64}();
+        K.ω     = 1.;
+        K.ω0    = 1.;
+        K.γc    = sqrt(K.ω * K.ω0) / 2;
+        K.γ     = 2 * K.γc;
         return K)
 end
 
@@ -47,9 +51,12 @@ end
 Quality of life functions
 ===============================#
 
-G(j) = (2 * γ) / (ω * sqrt(2 * j)) # what was the meaning of G?
+bigFactorial(n::Int) = (factorial ∘ big)(n)
 
-bigFactorial(n) = (factorial ∘ big)(n)
+G(j::Int)::Float64 = (2 * γ) / (ω * sqrt(2 * j)) # what was the meaning of G?
+# GV2(j::Int, ω::Float64, γ::Float64)::Float64 = (2 * γ) / (ω * sqrt(2 * j)) # what was the meaning of G?
+# Gl(j::Int, params=Params()) = (2 * params.γ) / (params.ω * sqrt(2 * j))
+# Gk(j::Int, params::Params) = (2 * params.γ) / (params.ω * sqrt(2 * j))
 
 cMinus(j::Int, m::Int) = j >= abs(m) ? 
     sqrt(j * (j + 1) - m * (m - 1)) : 
@@ -67,15 +74,17 @@ p(n_max, j, k) = j^2 / (n_max - k)
 parabola(n_max, j, k, x) = x^2 / p(n_max, j, k) + k
 
 """
-    vertex_approx(n_max, j, updown_factor)
+    maxn0_approx(n_max, j, updown_factor)
 
 Plane approximation of the dependency of `max(N(m = 0))` regarding the initial 
 parameters `n_max` and `j`.
 """
-vertex_approx(n_max::Int, j::Int, updown_factor=0)::Float64 = (
+maxn0_approx(n_max::Int, j::Int, updown_factor=0)::Int = ((
     0.9480705288984961 * n_max 
     - 1.1205718648719307 * j 
-    + (-7.2622607715155185 + updown_factor))
+    + (-7.2622607715155185 + updown_factor)) 
+    |> x -> round(x, RoundNearestTiesAway) 
+    |> Int)
 
 # Indices where all the elements of a vector in a matrix (column or row)
 # are equal to cero. These vectors do not contribute to the final solution.
@@ -85,7 +94,88 @@ undesired_indices(vector_set) = (
 
 undesired_indices_nothing(vector_set) = (
     index for (index, vector) in enumerate(vector_set)
-    if all(x -> x == nothing, vector))
+    if all(x -> x === nothing, vector))
+
+
+#==============================
+Convergence & selection
+criteria
+===============================#
+
+function convergenceCriterion(
+    j::Int,
+    eigendata::LinearAlgebra.Eigen,
+    epsilon::T=1E-3 # The used value on previous computations was 1E-6
+) where {T<:Float64}
+    # Coefficients that correspond to the last n in every eigen vector
+    index_of_first_nth_coeff = size(eigendata.values)[1] - 2 * j
+    # kappas = vec(sum(eigendata.vectors[index_of_first_nth_coeff:end, :] .^ 2, dims=1))
+    kappas = sum(abs2, eigendata.vectors[index_of_first_nth_coeff:end, :], dims=1) |> vec
+    for (index, kappa) in enumerate(kappas)
+        if kappa > epsilon
+            return (values=eigendata.values[1:index],
+                vectors=eigendata.vectors[:, 1:index],
+                kappa=kappas[1:end])
+        end
+    end
+end
+
+
+function selectionCriterion(
+    j::Int,
+    matrix::Array{T,2},
+    epsilon::T=1E-3
+) where {T<:Float64}
+    m_range = -j:j
+    tmp = Array{NTuple{2,Int}}(undef, length(m_range) * size(matrix)[2])
+
+    for (i, col) in enumerate(eachcol(matrix)), (index, m) in enumerate(m_range)
+        vector = col[index:length(m_range):end] .^ 2
+        findings = findall(vector .>= epsilon)
+        # If no coefficient for a given m fulfills the condition then 0 is used
+        if size(findings)[1] != 0
+            tmp[index+length(m_range)*(i-1)] = (findings[end] - 1, m)
+        else
+            tmp[index+length(m_range)*(i-1)] = (0, m)
+        end
+    end
+
+    # tmp
+    tmp_filter = Array{Tuple{Int,Int}}(undef, length(m_range))
+    for (i, m) in enumerate(-j:j)
+        m_filter = filter(x -> x[2] == m, tmp)
+        index_max = argmax(map(x -> x[1], m_filter))
+        tmp_filter[i] = m_filter[index_max]
+    end
+
+    return (ns=map(x -> x[1], tmp_filter),
+        ms=map(x -> x[2], tmp_filter))
+end
+
+
+"""
+    specialCriterion(max_indexes, eigendata, epsilon=1E-3)
+
+This function gathers the entries in the positions given in `max_indexes` of
+all the eigenvectors stored in `eigendata`, it determines which eigenvectors
+have converged and returns them alongside their respective eigenvalues.
+
+# Arguments
+- `max_indexes::Array{Int, 1}`: ordered array of 1's and 0's that align with `(N(m_i), m_i)` ∀ `m_i` ∈ {-j:j} to filter those where `N(m_i)` → `maxN(m_i)`.
+- `eigendata::LinearAlgebra.Eigen`: resulting eigenvalues and eigenvectors from `LinearAlgebra.eigen()`.
+- `epsilon::Float64=1E-3`: default tolerance, can be changed.
+"""
+function specialCriterion(
+    max_indexes::Array{Int,1},
+    eigendata::LinearAlgebra.Eigen,
+    epsilon::Float64=1E-3 # The used value on previous computations was 1E-6
+)
+    criterion = (
+        (sum(abs2, eigendata.vectors[max_indexes.==1, :], dims=1) .< epsilon) 
+        |> vec)
+    return (values=eigendata.values[criterion],
+        vectors=eigendata.vectors[:, criterion])
+end
 
 
 #==============================
@@ -134,6 +224,42 @@ function overlap(
     end
     # Just renaming a factor to reduce linesize.
     newG = G(j) * (m_bra - m_ket)
+    # Initial term of the summatory.
+    i0 = (-1)^(n_ket) * newG^(n_bra + n_ket) /
+         sqrt(bigFactorial(n_bra) * bigFactorial(n_ket))
+
+    coeff(k) = (-1) * newG^(-2) * (n_bra - k) * (n_ket - k) / (k + 1)
+
+    a = i0 * coeff(0)
+    summation = a
+    for k in 1:min(n_bra, n_ket)-1
+        a = a * coeff(k)
+        summation += a
+    end
+
+    return exp(-newG^2 / 2) * (i0 + summation)
+end
+
+function overlapV2(
+    n_bra::T,
+    m_bra::T,
+    n_ket::T,
+    m_ket::T,
+    j::T,
+    ω::Float64,
+    γ::Float64
+)::Float64 where {T<:Int}
+    # Dealing with the special cases first!
+    # 1st special case N' = N, m' != m.
+    if m_bra == m_ket && n_bra != n_ket
+        return 0
+    end
+    # 2nd special case N' = N, m' = m.
+    if m_bra == m_ket && n_bra == n_ket
+        return 1
+    end
+    # Just renaming a factor to reduce linesize.
+    newG = GV2(j, ω, γ) * (m_bra - m_ket)
     # Initial term of the summatory.
     i0 = (-1)^(n_ket) * newG^(n_bra + n_ket) /
          sqrt(bigFactorial(n_bra) * bigFactorial(n_ket))
@@ -262,82 +388,6 @@ function hamiltonian(
 end
 
 
-function convergenceCriterion(
-    j::Int,
-    eigendata::LinearAlgebra.Eigen,
-    epsilon::T=1E-3 # The used value on previous computations was 1E-6
-) where {T<:Float64}
-    # Coefficients that correspond to the last n in every eigen vector
-    index_of_first_nth_coeff = size(eigendata.values)[1] - 2 * j
-    # kappas = vec(sum(eigendata.vectors[index_of_first_nth_coeff:end, :] .^ 2, dims=1))
-    kappas = sum(abs2, eigendata.vectors[index_of_first_nth_coeff:end, :], dims=1) |> vec
-    for (index, kappa) in enumerate(kappas)
-        if kappa > epsilon
-            return (values=eigendata.values[1:index],
-                vectors=eigendata.vectors[:, 1:index],
-                kappa=kappas[1:end])
-        end
-    end
-end
-
-
-function selectionCriterion(
-    j::Int,
-    matrix::Array{T,2},
-    epsilon::T=1E-3
-) where {T<:Float64}
-    m_range = -j:j
-    tmp = Array{NTuple{2,Int}}(undef, length(m_range) * size(matrix)[2])
-
-    for (i, col) in enumerate(eachcol(matrix)), (index, m) in enumerate(m_range)
-        vector = col[index:length(m_range):end] .^ 2
-        findings = findall(vector .>= epsilon)
-        # If no coefficient for a given m fulfills the condition then 0 is used
-        if size(findings)[1] != 0
-            tmp[index+length(m_range)*(i-1)] = (findings[end] - 1, m)
-        else
-            tmp[index+length(m_range)*(i-1)] = (0, m)
-        end
-    end
-
-    # tmp
-    tmp_filter = Array{Tuple{Int,Int}}(undef, length(m_range))
-    for (i, m) in enumerate(-j:j)
-        m_filter = filter(x -> x[2] == m, tmp)
-        index_max = argmax(map(x -> x[1], m_filter))
-        tmp_filter[i] = m_filter[index_max]
-    end
-
-    return (ns=map(x -> x[1], tmp_filter),
-        ms=map(x -> x[2], tmp_filter))
-end
-
-
-"""
-    specialCriterion(max_indexes, eigendata, epsilon=1E-3)
-
-This function gathers the entries in the positions given in `max_indexes` of
-all the eigenvectors stored in `eigendata`, it determines which eigenvectors
-have converged and returns them alongside their respective eigenvalues.
-
-# Arguments
-- `max_indexes::Array{Int, 1}`: ordered array of 1's and 0's that align with `(N(m_i), m_i)` ∀ `m_i` ∈ {-j:j} to filter those where `N(m_i)` → `maxN(m_i)`.
-- `eigendata::LinearAlgebra.Eigen`: resulting eigenvalues and eigenvectors from `LinearAlgebra.eigen()`.
-- `epsilon::Float64=1E-3`: default tolerance, can be changed.
-"""
-function specialCriterion(
-    max_indexes::Array{Int,1},
-    eigendata::LinearAlgebra.Eigen,
-    epsilon::Float64=1E-3 # The used value on previous computations was 1E-6
-)
-    criterion = ((sum(abs2, eigendata.vectors[max_indexes.==1, :], dims=1) .< epsilon)
-                 |>
-                 vec)
-    return (values=eigendata.values[criterion],
-        vectors=eigendata.vectors[:, criterion])
-end
-
-
 #==============================
 Differentiated Dicke model
 ===============================#
@@ -354,15 +404,18 @@ which states do contribute to the system.
 - `maxN0::Int`: expected value of max(Nmax(m = 0)).
 """
 function hamiltonianSpecial(
-    n_max::T,
-    j::T,
-    maxN0::T
+    n_max   :: T,
+    j       :: T,
+    maxN0   :: T = -1,
 ) where {T<:Int}
+    
     n_range = 0:n_max
     m_range = -j:j
     dim = (2 * j + 1) * (n_max + 1)
     mat = zeros(dim, dim)  # Initialize matrix
-    max_indexes = zeros(Int, dim)  # Initialize max(Nmax(m)) vector
+    max_indexes = zeros(Int, dim)  # Initialize max(Nmax(m)) bool vector
+    
+    maxN0 = maxN0 == -1 ? maxn0_approx(n_max, j) : maxN0
     conditional(n, m) = n >= parabola(n_max, j, maxN0, m)
 
     col = 1
@@ -375,13 +428,15 @@ function hamiltonianSpecial(
                 if n_bra == n_ket && m_bra == m_ket
                     mat[row, col] = ω * (n_ket - (G(j) * m_ket)^2)
                 elseif m_bra == m_ket + 1
-                    mat[row, col] = mat[col, row] = (-ω0 / 2) *
-                                                    cPlus(j, m_ket) *
-                                                    overlap(n_bra, m_bra, n_ket, m_ket, j)
+                    mat[row, col] = mat[col, row] = (
+                        (-ω0 / 2) * 
+                        cPlus(j, m_ket) *
+                        overlap(n_bra, m_bra, n_ket, m_ket, j))
                 elseif m_bra == m_ket - 1
-                    mat[row, col] = mat[col, row] = (-ω0 / 2) *
-                                                    cMinus(j, m_ket) *
-                                                    overlap(n_bra, m_bra, n_ket, m_ket, j)
+                    mat[row, col] = mat[col, row] = (
+                        (-ω0 / 2) *
+                        cMinus(j, m_ket) *
+                        overlap(n_bra, m_bra, n_ket, m_ket, j))
                 end
                 # The max(Nmax(m)) for each m ∈ -j:j is the same for all
                 # the column vectors. Thus it is only necessary to compute it
@@ -408,16 +463,20 @@ function hamiltonianSpecial(
 end
 
 
-function hamiltonianSpecial(
+function hamiltonianSpecialV2(
     n_max   :: T,
-    j       :: T
+    j       :: T,
+    maxN0   :: T = -1,
+    params=Params()
 ) where {T<:Int}
-    maxN0 = vertex_approx(n_max, j)
+    
     n_range = 0:n_max
     m_range = -j:j
     dim = (2 * j + 1) * (n_max + 1)
     mat = zeros(dim, dim)  # Initialize matrix
     max_indexes = zeros(Int, dim)  # Initialize max(Nmax(m)) vector
+    
+    maxN0 = maxN0 == -1 ? maxn0_approx(n_max, j) : maxN0
     conditional(n, m) = n >= parabola(n_max, j, maxN0, m)
 
     col = 1
@@ -428,15 +487,15 @@ function hamiltonianSpecial(
             # of the symmetry of the hamiltonian
             if row >= col && !(conditional(n_ket, m_ket) || conditional(n_bra, m_bra))
                 if n_bra == n_ket && m_bra == m_ket
-                    mat[row, col] = ω * (n_ket - (G(j) * m_ket)^2)
+                    mat[row, col] = params.ω * (n_ket - (GV2(j, params.ω, params.γ) * m_ket)^2)
                 elseif m_bra == m_ket + 1
-                    mat[row, col] = mat[col, row] = (-ω0 / 2) *
+                    mat[row, col] = mat[col, row] = (-params.ω0 / 2) *
                                                     cPlus(j, m_ket) *
-                                                    overlap(n_bra, m_bra, n_ket, m_ket, j)
+                                                    overlapV2(n_bra, m_bra, n_ket, m_ket, j, params.ω, params.γ)
                 elseif m_bra == m_ket - 1
-                    mat[row, col] = mat[col, row] = (-ω0 / 2) *
+                    mat[row, col] = mat[col, row] = (-params.ω0 / 2) *
                                                     cMinus(j, m_ket) *
-                                                    overlap(n_bra, m_bra, n_ket, m_ket, j)
+                                                    overlapV2(n_bra, m_bra, n_ket, m_ket, j, params.ω, params.γ)
                 end
                 # The max(Nmax(m)) for each m ∈ -j:j is the same for all
                 # the column vectors. Thus it is only necessary to compute it
@@ -491,64 +550,8 @@ function hamiltonianSpecialOnes(
 end
 
 
-mutable struct Braket
-    n_bra::Int
-    m_bra::Int
-    m_ket::Int
-    n_ket::Int
-    entry::Float64
-    falsy::Bool     # Truth value depending if this entry corresponds to a value where max( Nmax( m ) ) is found
-end
-
-
-function hamiltonianBrakets(
-    n_max::T,
-    j::T,
-    maxN0::T
-) where {T<:Int}
-    n_range = 0:n_max
-    m_range = -j:j
-    dim = (2 * j + 1) * (n_max + 1)
-    temp = Array{Union{Braket,Nothing}}(nothing, dim, dim)
-    conditional(n, m) = n >= parabola(n_max, j, maxN0, m) # To filter states
-
-    col = 1
-    for n_ket = n_range, m_ket = m_range
-        row = 1
-        for n_bra = n_range, m_bra = m_range
-            # If the condition is satisfied then the element is filled with
-            # its state information
-            state = Braket(n_bra, m_bra, n_ket, m_ket, 0.0, false)
-            if !(conditional(n_ket, m_ket) || conditional(n_bra, m_bra))
-                temp[row, col] = state
-                # More conditions
-                if n_bra == n_ket && m_bra == m_ket
-                    temp[row, col].entry = ω * (n_ket - (G(j) * m_ket)^2)
-                elseif m_bra == m_ket + 1
-                    temp[row, col].entry = (-ω0 / 2) *
-                                           cPlus(j, m_ket) *
-                                           overlap(n_bra, m_bra, n_ket, m_ket, j)
-                elseif m_bra == m_ket - 1
-                    temp[row, col].entry = (-ω0 / 2) *
-                                           cMinus(j, m_ket) *
-                                           overlap(n_bra, m_bra, n_ket, m_ket, j)
-                end
-                # Only for the first column because for all m's this process
-                # will render the same max(Nmax(m)) respecively
-                if col == 1 && n_bra == (parabola(n_max, j, maxN0, m_bra) ÷ 1)
-                    temp[row, col].falsy = true
-                end
-            end
-            row += 1
-        end
-        col += 1
-    end
-    undesired_rows = undesired_indices_nothing(eachrow(temp)) |> collect
-    temp[1:end.∉[undesired_rows], 1:end.∉[undesired_rows]]
-end
-
 #==============================
-Save data
+Compute and save
 ===============================#
 
 padding(var) = lpad(var, 3, "0")
@@ -609,4 +612,4 @@ function generate_data(
     println("Finished computing data set files !")
 end
 
-end # module
+end  # module
