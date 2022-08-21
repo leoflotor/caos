@@ -5,6 +5,7 @@ colors = ["black", "orange", "green", "cyan", "red"]
 
 padding(var) 	= lpad(var, 3, "0")
 file_name(n, j) = "data/sel_$(n |> padding)_$(j |> padding).csv"
+files(jval) = filter(x -> occursin("sel", x) && occursin(padding(jval) * ".csv", x), readdir("data/", join=true))
 
 p(n_max, j, k) 				= j^2 / (n_max - k)
 parabola(n_max, j, k, x) 	= x^2 / p(n_max, j, k) + k
@@ -13,13 +14,23 @@ function j_range()
 	return 20:10:60
 end
 
-function plot()
+function write_file(file_name::String, data::Any)
+    open(file_name, "w") do io
+        DelimitedFiles.writedlm(io, data, ',')
+    end
+end
+
+function plotMaxN()
 	js = j_range()
 	plot_ = Plots.plot(legendfontsize=7, legend=:bottomright)
 	for (index, j) in enumerate(js[:])
+        x_data = []
+        y_data = []
+
 		for i in 2:20
 			n = i * j ÷ 2
 			file = file_name(n, j)
+
 			if isfile(file)
 		    	data = DelimitedFiles.readdlm(file, ',')
 		       	y = data[:,2]
@@ -27,6 +38,9 @@ function plot()
 		       	# x0 = x[(length(x)+1) ÷ 2]
 		       	x0 = n
 		       	y0 = y[(length(y) + 1) ÷ 2]
+
+                append!(x_data, x0)
+                append!(y_data, y0)
 
 		    	Plots.scatter!(
 		    		[x0], [y0], 
@@ -41,6 +55,7 @@ function plot()
 		    		)
 		    end
 		end
+        write_file("data/maxn_j_$(j).csv", [x_data y_data])
 	end
 	display(plot_)
 end

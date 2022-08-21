@@ -11,6 +11,7 @@ done by using a convergence tolerance and selection tolerance of 1E-6 and
 """
 module DickeModel
 
+
 #==============================
 Required packages
 ===============================#
@@ -23,10 +24,10 @@ import DelimitedFiles
 Parameter definitions
 ===============================#
 
-const ω     = 1.
-const ω0    = 1.
-const γc    = sqrt(ω * ω0) / 2
-const γ     = 2 * γc
+const ω = 1.0
+const ω0 = 1.0
+const γc = sqrt(ω * ω0) / 2
+const γ = 2 * γc
 
 # The good thing about using this struct would be that the parameters
 # can be changed at anytime. On the contrary, if the constants are defined
@@ -34,15 +35,15 @@ const γ     = 2 * γc
 # Even if they modify the source, they would need to reload the package for
 # the changes to take effect.
 mutable struct Params{T<:Float64}
-    ω   :: T
-    ω0  :: T
-    γc  :: T
-    γ   :: T
+    ω::T
+    ω0::T
+    γc::T
+    γ::T
     Params() = (K = new{Float64}();
-        K.ω     = 1.;
-        K.ω0    = 1.;
-        K.γc    = sqrt(K.ω * K.ω0) / 2;
-        K.γ     = 2 * K.γc;
+        K.ω = 1.0;
+        K.ω0 = 1.0;
+        K.γc = sqrt(K.ω * K.ω0) / 2;
+        K.γ = 2 * K.γc;
         return K)
 end
 
@@ -58,12 +59,12 @@ G(j::Int)::Float64 = (2 * γ) / (ω * sqrt(2 * j)) # what was the meaning of G?
 # Gl(j::Int, params=Params()) = (2 * params.γ) / (params.ω * sqrt(2 * j))
 # Gk(j::Int, params::Params) = (2 * params.γ) / (params.ω * sqrt(2 * j))
 
-cMinus(j::Int, m::Int) = j >= abs(m) ? 
-    sqrt(j * (j + 1) - m * (m - 1)) : 
+cMinus(j::Int, m::Int) = j >= abs(m) ?
+    sqrt(j * (j + 1) - m * (m - 1)) :
     throw(ErrorException("Found j < abs(m), (j, m) = ($j, $m)."))
 
-cPlus(j::Int, m::Int) = j >= abs(m) ? 
-    sqrt(j * (j + 1) - m * (m + 1)) : 
+cPlus(j::Int, m::Int) = j >= abs(m) ?
+    sqrt(j * (j + 1) - m * (m + 1)) :
     throw(ErrorException("Found j < abs(m), (j, m) = ($j, $m)."))
 
 # Find the solution of the matrix representation of the hamiltonian
@@ -80,10 +81,10 @@ Plane approximation of the dependency of `max(N(m = 0))` regarding the initial
 parameters `n_max` and `j`.
 """
 maxn0_approx(n_max::Int, j::Int, updown_factor=0)::Int = ((
-    0.9480705288984961 * n_max 
-    - 1.1205718648719307 * j 
-    + (-7.2622607715155185 + updown_factor)) 
-    |> x -> round(x, RoundNearestTiesAway) 
+    0.9480705288984961 * n_max
+    - 1.1205718648719307 * j
+    + (-7.2622607715155185 + updown_factor))
+    |> x -> round(x, RoundNearestTiesAway)
     |> Int)
 
 # Indices where all the elements of a vector in a matrix (column or row)
@@ -98,8 +99,8 @@ undesired_indices_nothing(vector_set) = (
 
 
 #==============================
-Convergence & selection
-criteria
+Convergence, selection and 
+special criteria
 ===============================#
 
 function convergenceCriterion(
@@ -178,6 +179,11 @@ function specialCriterion(
 end
 
 
+function coeffGrid(n_max, j, arr)
+    return reshape(sum(arr.^2, dims=2), (2*j + 1, n_max + 1))
+end
+
+
 #==============================
 Dicke model
 ===============================#
@@ -240,42 +246,6 @@ function overlap(
     return exp(-newG^2 / 2) * (i0 + summation)
 end
 
-function overlapV2(
-    n_bra::T,
-    m_bra::T,
-    n_ket::T,
-    m_ket::T,
-    j::T,
-    ω::Float64,
-    γ::Float64
-)::Float64 where {T<:Int}
-    # Dealing with the special cases first!
-    # 1st special case N' = N, m' != m.
-    if m_bra == m_ket && n_bra != n_ket
-        return 0
-    end
-    # 2nd special case N' = N, m' = m.
-    if m_bra == m_ket && n_bra == n_ket
-        return 1
-    end
-    # Just renaming a factor to reduce linesize.
-    newG = GV2(j, ω, γ) * (m_bra - m_ket)
-    # Initial term of the summatory.
-    i0 = (-1)^(n_ket) * newG^(n_bra + n_ket) /
-         sqrt(bigFactorial(n_bra) * bigFactorial(n_ket))
-
-    coeff(k) = (-1) * newG^(-2) * (n_bra - k) * (n_ket - k) / (k + 1)
-
-    a = i0 * coeff(0)
-    summation = a
-    for k in 1:min(n_bra, n_ket)-1
-        a = a * coeff(k)
-        summation += a
-    end
-
-    return exp(-newG^2 / 2) * (i0 + summation)
-end
-
 
 """
     overlapCollection(n_max, j)
@@ -307,7 +277,9 @@ function overlapCollection(
         row = 1
         for n_bra = n_range, m_bra = m_range
             if row >= col
-                temp[row, col] = temp[col, row] = overlap(n_bra, m_bra, n_ket, m_ket, j)
+                (temp[row, col] 
+                    = temp[col, row] 
+                    = overlap(n_bra, m_bra, n_ket, m_ket, j))
             end
             row += 1
         end
@@ -335,13 +307,17 @@ function hamiltonian(
                 if n_bra == n_ket && m_bra == m_ket
                     mat[row, col] = ω * (n_ket - (G(j) * m_ket)^2)
                 elseif m_bra == m_ket + 1
-                    mat[row, col] = mat[col, row] = (-ω0 / 2) *
-                                                    cPlus(j, m_ket) *
-                                                    overlap(n_bra, m_bra, n_ket, m_ket, j)
+                    (mat[row, col] 
+                        = mat[col, row] 
+                        = (-ω0 / 2) 
+                            * cPlus(j, m_ket) 
+                            * overlap(n_bra, m_bra, n_ket, m_ket, j))
                 elseif m_bra == m_ket - 1
-                    mat[row, col] = mat[col, row] = (-ω0 / 2) *
-                                                    cMinus(j, m_ket) *
-                                                    overlap(n_bra, m_bra, n_ket, m_ket, j)
+                    (mat[row, col] 
+                        = mat[col, row] 
+                        = (-ω0 / 2) 
+                            * cMinus(j, m_ket) 
+                            * overlap(n_bra, m_bra, n_ket, m_ket, j))
                 end
             end
             row += 1
@@ -404,17 +380,17 @@ which states do contribute to the system.
 - `maxN0::Int`: expected value of max(Nmax(m = 0)).
 """
 function hamiltonianSpecial(
-    n_max   :: T,
-    j       :: T,
-    maxN0   :: T = -1,
+    n_max::T,
+    j::T,
+    maxN0::T=-1,
 ) where {T<:Int}
-    
+
     n_range = 0:n_max
     m_range = -j:j
     dim = (2 * j + 1) * (n_max + 1)
     mat = zeros(dim, dim)  # Initialize matrix
     max_indexes = zeros(Int, dim)  # Initialize max(Nmax(m)) bool vector
-    
+
     maxN0 = maxN0 == -1 ? maxn0_approx(n_max, j) : maxN0
     conditional(n, m) = n >= parabola(n_max, j, maxN0, m)
 
@@ -429,7 +405,7 @@ function hamiltonianSpecial(
                     mat[row, col] = ω * (n_ket - (G(j) * m_ket)^2)
                 elseif m_bra == m_ket + 1
                     mat[row, col] = mat[col, row] = (
-                        (-ω0 / 2) * 
+                        (-ω0 / 2) *
                         cPlus(j, m_ket) *
                         overlap(n_bra, m_bra, n_ket, m_ket, j))
                 elseif m_bra == m_ket - 1
@@ -464,18 +440,18 @@ end
 
 
 function hamiltonianSpecialV2(
-    n_max   :: T,
-    j       :: T,
-    maxN0   :: T = -1,
+    n_max::T,
+    j::T,
+    maxN0::T=-1,
     params=Params()
 ) where {T<:Int}
-    
+
     n_range = 0:n_max
     m_range = -j:j
     dim = (2 * j + 1) * (n_max + 1)
     mat = zeros(dim, dim)  # Initialize matrix
     max_indexes = zeros(Int, dim)  # Initialize max(Nmax(m)) vector
-    
+
     maxN0 = maxN0 == -1 ? maxn0_approx(n_max, j) : maxN0
     conditional(n, m) = n >= parabola(n_max, j, maxN0, m)
 
